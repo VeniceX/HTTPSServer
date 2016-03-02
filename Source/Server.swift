@@ -56,7 +56,7 @@ public struct Server: ServerType {
         )
         self.parser = parser
         self.middleware = middleware
-        self.responder = Responder(respond: respond)
+        self.responder = Responder(respond)
         self.serializer = serializer
     }
 }
