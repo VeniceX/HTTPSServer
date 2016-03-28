@@ -23,16 +23,18 @@
 // SOFTWARE.
 
 @_exported import TCPSSL
-@_exported import HTTP
+@_exported import HTTPParser
+@_exported import HTTPSerializer
 
-public struct Server: ServerType {
-    public let server: StreamServerType
-    public let parser: RequestParserType
-    public let middleware: [MiddlewareType]
-    public let responder: ResponderType
-    public let serializer: ResponseSerializerType
+public struct Server {
+    public let server: C7.StreamServer
+    public let parser: S4.RequestParser
+    public let middleware: [S4.Middleware]
+    public let responder: S4.Responder
+    public let serializer: S4.ResponseSerializer
+    public let port: Int
 
-    public init(address: String? = nil, port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, parser: RequestParserType = RequestParser(), middleware: MiddlewareType..., responder: ResponderType, serializer: ResponseSerializerType = ResponseSerializer()) throws {
+    public init(address: String? = nil, port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., responder: S4.Responder, serializer: S4.ResponseSerializer = ResponseSerializer()) throws {
         self.server = try TCPSSLStreamServer(
             address: address,
             port: port,
@@ -44,9 +46,10 @@ public struct Server: ServerType {
         self.middleware = middleware
         self.responder = responder
         self.serializer = serializer
+        self.port = port
     }
 
-    public init(address: String? = nil, port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, parser: RequestParserType = RequestParser(), middleware: MiddlewareType..., serializer: ResponseSerializerType = ResponseSerializer(), respond: Respond) throws {
+    public init(address: String? = nil, port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., serializer: S4.ResponseSerializer = ResponseSerializer(), respond: Respond) throws {
         self.server = try TCPSSLStreamServer(
             address: address,
             port: port,
@@ -56,13 +59,15 @@ public struct Server: ServerType {
         )
         self.parser = parser
         self.middleware = middleware
-        self.responder = Responder(respond)
+        self.responder = BasicResponder(respond)
         self.serializer = serializer
+        self.port = port
     }
 }
 
 extension Server {
     public func start(failure: ErrorProtocol -> Void = Server.printError) throws {
+        printHeader()
         while true {
             let stream = try server.accept()
             co {
@@ -75,14 +80,11 @@ extension Server {
         }
     }
 
-    private func processStream(stream: StreamType) throws {
+    private func processStream(stream: Stream) throws {
         while !stream.closed {
             do {
                 let data = try stream.receive()
                 if let request = try parser.parse(data) {
-                    var request = request
-                    request.ip = stream.ip
-
                     let response = try middleware.intercept(responder).respond(request)
                     try serialize(response, stream: stream)
 
@@ -96,17 +98,17 @@ extension Server {
                         break
                     }
                 }
-            } catch StreamError.ClosedStream {
+            } catch StreamError.closedStream {
                 break
             } catch {
-                let response = Response(status: .InternalServerError)
+                let response = Response(status: .internalServerError)
                 try serialize(response, stream: stream)
                 throw error
             }
         }
     }
 
-    private func serialize(response: Response, stream: StreamType) throws {
+    private func serialize(response: Response, stream: Stream) throws {
         try serializer.serialize(response) { data in
             try stream.send(data)
         }
@@ -127,16 +129,55 @@ extension Server {
     private static func printError(error: ErrorProtocol) -> Void {
         print("Error: \(error)")
     }
+
+    private func printHeader() {
+        print("")
+        print("")
+        print("")
+        print("                             _____")
+        print("     ,.-``-._.-``-.,        /__  /  ___ _      ______")
+        print("    |`-._,.-`-.,_.-`|         / /  / _ \\ | /| / / __ \\")
+        print("    |   |ˆ-. .-`|   |        / /__/  __/ |/ |/ / /_/ /")
+        print("    `-.,|   |   |,.-`       /____/\\___/|__/|__/\\____/ (c)")
+        print("        `-.,|,.-`           -----------------------------")
+        print("")
+        print("================================================================================")
+        print("Started HTTP server, listening on port \(port).")
+    }
 }
 
 extension Request {
-    public var ip: IP? {
+    var connection: HeaderValues {
         get {
-            return storage["ip"] as? IP
+            return headers.headers["connection"] ?? HeaderValues([])
         }
 
-        set {
-            storage["ip"] = newValue
+        set(connection) {
+            headers.headers["connection"] = connection
+        }
+    }
+
+    var isKeepAlive: Bool {
+        if version.minor == 0 {
+            return connection.values.contains({$0.lowercased().contains("keep-alive")})
+        }
+
+        return connection.values.contains({!$0.lowercased().contains("close")})
+    }
+}
+
+extension Response {
+    typealias Upgrade = (Request, Stream) throws -> Void
+
+    // Warning: The storage key has to be in sync with Zewo.HTTP's upgrade property.
+    var upgrade: Upgrade? {
+        get {
+            return storage["response-connection-upgrade"] as? Upgrade
+        }
+
+        set(upgrade) {
+            storage["response-connection-upgrade"] = upgrade
         }
     }
 }
+
