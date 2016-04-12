@@ -27,17 +27,18 @@
 @_exported import HTTPSerializer
 
 public struct Server {
-    public let server: C7.StreamServer
+    public let server: C7.Host
     public let parser: S4.RequestParser
     public let middleware: [S4.Middleware]
     public let responder: S4.Responder
     public let serializer: S4.ResponseSerializer
     public let port: Int
 
-    public init(address: String? = nil, port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., responder: S4.Responder, serializer: S4.ResponseSerializer = ResponseSerializer()) throws {
-        self.server = try TCPSSLStreamServer(
-            address: address,
-            port: port,
+    public init(at host: String = "0.0.0.0", on port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusingPort reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., responder: S4.Responder, serializer: S4.ResponseSerializer = ResponseSerializer()) throws {
+        self.server = try TCPSSLServer(
+            at: host,
+            on: port,
+            reusingPort: reusePort,
             certificate: certificate,
             privateKey: privateKey,
             certificateChain: certificateChain
@@ -49,10 +50,11 @@ public struct Server {
         self.port = port
     }
 
-    public init(address: String? = nil, port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., serializer: S4.ResponseSerializer = ResponseSerializer(), respond: Respond) throws {
-        self.server = try TCPSSLStreamServer(
-            address: address,
-            port: port,
+    public init(at host: String = "0.0.0.0", on port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusingPort reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., serializer: S4.ResponseSerializer = ResponseSerializer(), _ respond: Respond) throws {
+        self.server = try TCPSSLServer(
+            at: host,
+            on: port,
+            reusingPort: reusePort,
             certificate: certificate,
             privateKey: privateKey,
             certificateChain: certificateChain
@@ -69,7 +71,7 @@ extension Server {
     public func start(failure: ErrorProtocol -> Void = Server.printError) throws {
         printHeader()
         while true {
-            let stream = try server.accept()
+            let stream = try server.accept(timingOut: .never)
             co {
                 do {
                     try self.processStream(stream)
@@ -83,37 +85,33 @@ extension Server {
     private func processStream(stream: Stream) throws {
         while !stream.closed {
             do {
-                let data = try stream.receive()
-                if let request = try parser.parse(data) {
-                    let response = try middleware.intercept(responder).respond(request)
-                    try serialize(response, stream: stream)
-
-                    if let upgrade = response.upgrade {
-                        try upgrade(request, stream)
-                        stream.close()
-                    }
-
-                    if !request.isKeepAlive {
-                        stream.close()
-                        break
-                    }
-                }
+                let data = try stream.receive(upTo: 2048)
+                try processData(data, stream: stream)
             } catch StreamError.closedStream {
                 break
             } catch {
                 let response = Response(status: .internalServerError)
-                try serialize(response, stream: stream)
+                try serializer.serialize(response, to: stream)
                 throw error
             }
         }
     }
 
-    private func serialize(response: Response, stream: Stream) throws {
-        try serializer.serialize(response) { data in
-            try stream.send(data)
-        }
+    private func processData(data: Data, stream: Stream) throws {
+        if let request = try parser.parse(data) {
+            let response = try middleware.chain(to: responder).respond(to: request)
+            try serializer.serialize(response, to: stream)
 
-        try stream.flush()
+            if let upgrade = response.upgrade {
+                try upgrade(request, stream)
+                stream.close()
+            }
+
+            if !request.isKeepAlive {
+                stream.close()
+                throw StreamError.closedStream(data: [])
+            }
+        }
     }
 
     public func startInBackground(failure: ErrorProtocol -> Void = Server.printError) {
@@ -131,25 +129,26 @@ extension Server {
     }
 
     private func printHeader() {
-        print("")
-        print("")
-        print("")
-        print("                             _____")
-        print("     ,.-``-._.-``-.,        /__  /  ___ _      ______")
-        print("    |`-._,.-`-.,_.-`|         / /  / _ \\ | /| / / __ \\")
-        print("    |   |ˆ-. .-`|   |        / /__/  __/ |/ |/ / /_/ /")
-        print("    `-.,|   |   |,.-`       /____/\\___/|__/|__/\\____/ (c)")
-        print("        `-.,|,.-`           -----------------------------")
-        print("")
-        print("================================================================================")
-        print("Started HTTP server, listening on port \(port).")
+        var header = "\n"
+        header += "\n"
+        header += "\n"
+        header += "                             _____\n"
+        header += "     ,.-``-._.-``-.,        /__  /  ___ _      ______\n"
+        header += "    |`-._,.-`-.,_.-`|         / /  / _ \\ | /| / / __ \\\n"
+        header += "    |   |ˆ-. .-`|   |        / /__/  __/ |/ |/ / /_/ /\n"
+        header += "    `-.,|   |   |,.-`       /____/\\___/|__/|__/\\____/ (c)\n"
+        header += "        `-.,|,.-`           -----------------------------\n"
+        header += "\n"
+        header += "================================================================================\n"
+        header += "Started HTTP server, listening on port \(port)."
+        print(header)
     }
 }
 
 extension Request {
-    var connection: HeaderValues {
+    var connection: Header {
         get {
-            return headers.headers["connection"] ?? HeaderValues([])
+            return headers.headers["connection"] ?? Header([])
         }
 
         set(connection) {
