@@ -33,12 +33,13 @@ public struct Server {
     public let responder: S4.Responder
     public let serializer: S4.ResponseSerializer
     public let port: Int
+    public let bufferSize: Int = 2048
 
-    public init(at host: String = "0.0.0.0", on port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusingPort reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., responder: S4.Responder, serializer: S4.ResponseSerializer = ResponseSerializer()) throws {
+    public init(host: String = "0.0.0.0", port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., responder: S4.Responder, serializer: S4.ResponseSerializer = ResponseSerializer()) throws {
         self.server = try TCPSSLServer(
-            at: host,
-            on: port,
-            reusingPort: reusePort,
+            host: host,
+            port: port,
+            reusePort: reusePort,
             certificate: certificate,
             privateKey: privateKey,
             certificateChain: certificateChain
@@ -50,11 +51,11 @@ public struct Server {
         self.port = port
     }
 
-    public init(at host: String = "0.0.0.0", on port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusingPort reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., serializer: S4.ResponseSerializer = ResponseSerializer(), _ respond: Respond) throws {
+    public init(host: String = "0.0.0.0", port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusingPort reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., serializer: S4.ResponseSerializer = ResponseSerializer(), _ respond: Respond) throws {
         self.server = try TCPSSLServer(
-            at: host,
-            on: port,
-            reusingPort: reusePort,
+            host: host,
+            port: port,
+            reusePort: reusePort,
             certificate: certificate,
             privateKey: privateKey,
             certificateChain: certificateChain
@@ -85,10 +86,8 @@ extension Server {
     private func processStream(_ stream: Stream) throws {
         while !stream.closed {
             do {
-                let data = try stream.receive(upTo: 2048)
+                let data = try stream.receive(upTo: bufferSize)
                 try processData(data, stream: stream)
-            } catch StreamError.closedStream {
-                break
             } catch {
                 let response = Response(status: .internalServerError)
                 try serializer.serialize(response, to: stream)
@@ -109,7 +108,6 @@ extension Server {
 
             if !request.isKeepAlive {
                 try stream.close()
-                throw StreamError.closedStream(data: [])
             }
         }
     }
