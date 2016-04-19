@@ -33,12 +33,13 @@ public struct Server {
     public let responder: S4.Responder
     public let serializer: S4.ResponseSerializer
     public let port: Int
+    public let bufferSize: Int = 2048
 
-    public init(at host: String = "0.0.0.0", on port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusingPort reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., responder: S4.Responder, serializer: S4.ResponseSerializer = ResponseSerializer()) throws {
+    public init(host: String = "0.0.0.0", port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., responder: S4.Responder, serializer: S4.ResponseSerializer = ResponseSerializer()) throws {
         self.server = try TCPSSLServer(
-            at: host,
-            on: port,
-            reusingPort: reusePort,
+            host: host,
+            port: port,
+            reusePort: reusePort,
             certificate: certificate,
             privateKey: privateKey,
             certificateChain: certificateChain
@@ -50,11 +51,11 @@ public struct Server {
         self.port = port
     }
 
-    public init(at host: String = "0.0.0.0", on port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusingPort reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., serializer: S4.ResponseSerializer = ResponseSerializer(), _ respond: Respond) throws {
+    public init(host: String = "0.0.0.0", port: Int = 8080, certificate: String, privateKey: String, certificateChain: String? = nil, reusingPort reusePort: Bool = false, parser: S4.RequestParser = RequestParser(), middleware: Middleware..., serializer: S4.ResponseSerializer = ResponseSerializer(), _ respond: Respond) throws {
         self.server = try TCPSSLServer(
-            at: host,
-            on: port,
-            reusingPort: reusePort,
+            host: host,
+            port: port,
+            reusePort: reusePort,
             certificate: certificate,
             privateKey: privateKey,
             certificateChain: certificateChain
@@ -68,7 +69,7 @@ public struct Server {
 }
 
 extension Server {
-    public func start(failure: ErrorProtocol -> Void = Server.printError) throws {
+    public func start(_ failure: ErrorProtocol -> Void = Server.printError) throws {
         printHeader()
         while true {
             let stream = try server.accept(timingOut: .never)
@@ -82,13 +83,11 @@ extension Server {
         }
     }
 
-    private func processStream(stream: Stream) throws {
+    private func processStream(_ stream: Stream) throws {
         while !stream.closed {
             do {
-                let data = try stream.receive(upTo: 2048)
+                let data = try stream.receive(upTo: bufferSize)
                 try processData(data, stream: stream)
-            } catch StreamError.closedStream {
-                break
             } catch {
                 let response = Response(status: .internalServerError)
                 try serializer.serialize(response, to: stream)
@@ -97,24 +96,23 @@ extension Server {
         }
     }
 
-    private func processData(data: Data, stream: Stream) throws {
+    private func processData(_ data: Data, stream: Stream) throws {
         if let request = try parser.parse(data) {
             let response = try middleware.chain(to: responder).respond(to: request)
             try serializer.serialize(response, to: stream)
 
             if let upgrade = response.upgrade {
                 try upgrade(request, stream)
-                stream.close()
+                try stream.close()
             }
 
             if !request.isKeepAlive {
-                stream.close()
-                throw StreamError.closedStream(data: [])
+                try stream.close()
             }
         }
     }
 
-    public func startInBackground(failure: ErrorProtocol -> Void = Server.printError) {
+    public func startInBackground(_ failure: ErrorProtocol -> Void = Server.printError) {
         co {
             do {
                 try self.start()
@@ -124,7 +122,7 @@ extension Server {
         }
     }
 
-    private static func printError(error: ErrorProtocol) -> Void {
+    private static func printError(_ error: ErrorProtocol) -> Void {
         print("Error: \(error)")
     }
 
